@@ -403,8 +403,16 @@ function cmd:results()
 	end
 end -- cmd:results
 
-function cmd:result()
-	return select(2, self:recvmsg())
+function cmd:result(close)
+	local function doclose(self, close, ...)
+		if close then
+			self:close()
+		end
+
+		return ...
+	end
+
+	return doclose(self, close, select(2, self:recvmsg()))
 end -- cmd:result
 
 
@@ -535,14 +543,22 @@ end -- dir:close
 local sh = {}
 
 function sh.execute(...)
-	return os_execute(tocommand(setargs(...), [[
-		exec "$@"
-	]]))
+	return cmd.execute(...)
 end -- sh.execute
 
 
 function sh.getcwd()
-	return nil
+	local cmd = cmd.new()
+
+	cmd:addcode'sendmsg "$(pwd -P)"'
+
+	local cwd = cmd:result(true)
+
+	if cwd and #cwd > 0 then
+		return cwd
+	else
+		return nil, cmd:errors()
+	end
 end -- sh.getcwd
 
 
@@ -551,11 +567,8 @@ function sh.glob(path)
 	local cmd = cmd.new()
 
 	cmd:addlib"glob"
-	cmd:addcode([[
-		P="%s"
-		decode8 P
-		glob "${P}"
-	]], encode8(path))
+	cmd:setargs(path)
+	cmd:addcode'glob "${1}"'
 
 	for type, file in cmd:results() do
 		if type == "glob" then
@@ -605,37 +618,169 @@ function sh.rename(old, new)
 end -- sh.rename
 
 
-local function stat_ls(path, st)
+local function ls_imode(s)
+	local t, u, g, o = s:match("^(.)(...)(...)(...)")
+	local m = 0
+	local irusr, iwusr, ixusr = 0, 0, 0
+	local irgrp, iwgrp, ixgrp = 0, 0, 0
+	local iroth, iwoth, ixoth = 0, 0, 0
+	local isuid, isgid, isvtx = 0, 0, 0
+
+	if t then
+		for c in u:gmatch"." do
+			if c == "r" then
+				irusr = tonumber("0400", 8)
+			elseif c == "w" then
+				iwusr = tonumber("0200", 8)
+			elseif c == "x" then
+				ixusr = tonumber("0100", 8)
+			elseif c == "S" then
+				ixusr = 0
+				isuid = tonumber("4000", 8)
+			elseif c == "s" then
+				ixusr = tonumber("0100", 8)
+				isuid = tonumber("4000", 8)
+			end
+		end
+
+		for c in g:gmatch"." do
+			if c == "r" then
+				irgrp = tonumber("0040", 8)
+			elseif c == "w" then
+				iwgrp = tonumber("0020", 8)
+			elseif c == "x" then
+				ixgrp = tonumber("0010", 8)
+			elseif c == "S" then
+				ixgrp = 0
+				isgid = tonumber("2000", 8)
+			elseif c == "s" then
+				ixgrp = tonumber("0010", 8)
+				isgid = tonumber("2000", 8)
+			end
+		end
+
+		for c in o:gmatch"." do
+			if c == "r" then
+				iroth = tonumber("0004", 8)
+			elseif c == "w" then
+				iwoth = tonumber("0002", 8)
+			elseif c == "x" then
+				ixoth = tonumber("0001", 8)
+			elseif c == "T" then
+				ixoth = 0
+				isvtx = tonumber("1000", 8)
+			elseif c == "s" then
+				ixoth = tonumber("0001", 8)
+				isvtx = tonumber("1000", 8)
+			end
+		end
+
+		local perm = irusr + iwusr + ixusr
+		           + irgrp + iwgrp + ixgrp
+		           + iroth + iwoth + ixoth
+		           + isuid + isgid + isvtx
+
+		return t, perm
+	end
+end
+
+local ls_fields = {
+	"ino", "mode", "nlink", "user", "group", "size", "uid", "gid", "type"
+}
+
+local function need_ls(st)
+	for i=1,#ls_fields do
+		if not st[ls_fields[i]] then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function ls_stat(path, st)
+	if not need_ls(st) then
+		return true
+	end
+
 	local cmd = cmd.new()
 
 	cmd:setargs(path)
 	cmd:addcode[[
 		sendmsg "$(ls -ildH -- "${1}")"
+		sendmsg "$(ls -ildHn -- "${1}")"
 	]]
 
-	cmd:run()
-	local ln = cmd:result() or ""
+	local pat = "^(%d+)%s+([^%s]+)%s+(%d+)%s+([^%s]+)%s+([^%s]+)%s+(%d+)%s*"
+	local ino, mode, nlink, user, group, size
+	local ug_ino, _, uid, gid
+	local n = 0
+
+	repeat
+		n = n + 1
+		ino, mode, nlink, user, group, size = (cmd:result() or ""):match(pat)
+		ug_ino, _, _, uid, gid = (cmd:result() or ""):match(pat)
+	until ino == ug_ino or n > 3
+
 	cmd:close()
 
-	st = st or {}
+	if ino then
+		if ino ~= ug_ino then
+			return false, "inconsistent inode data"
+		elseif st.ino and st.ino ~= tonumber(ino) then
+			return false, "inode number changed"
+		end
 
-	local serial, mode, nlink, user, group, size, p = ln:match("^(%d+)%s+([^%s]+)%s+(%d+)%s+([^%s]+)%s+([^%s]+)%s+(%d+)%s*()")
+		st.ino = st.ino or tonumber(ino)
 
-	if serial then
-		st.ino = st.ino or tonumber(serial)
-		st.mode = st.mode or mode
-		st.nlink = st.nlink or nlink
-		st.uid = st.uid or user
-		st.gid = st.gid or group
+		local type, perm = ls_imode(mode or "")
+
+		if type then
+			st.mode = st.mode or perm
+			st.type = st.type or type
+		end
+
+		st.nlink = st.nlink or tonumber(nlink)
+		st.user = st.user or user
+		st.group = st.group or group
 		st.size = st.size or tonumber(size)
 
-		return st
-	else
-		return nil, cmd:errors()
-	end
-end -- stat_ls
+		st.uid = st.uid or tonumber(uid, 8)
+		st.gid = st.gid or tonumber(gid, 8)
 
-local function stat_ustar(path, st)
+		return true
+	else
+		return false, cmd:errors()
+	end
+end -- ls_stat
+
+local ustar_fields = { "mode", "uid", "gid", "size", "mtime", "user", "group", "type" }
+
+local function need_ustar(st)
+	for i=1,#ustar_fields do
+		if not st[ustar_fields[i]] then
+			return true
+		end
+	end
+
+	local st_ifmt = st.mode / tonumber("07777", 8)
+
+	if st_ifmt == 0 then
+		return true
+	end
+
+	return false
+end
+
+local ustar_typemap = {
+	[0] = "-", [2] = "l", [3] = "c", [4] = "b", [5] = "d", [6] = "p"
+}
+
+local function ustar_stat(path, st)
+	if not need_ustar(st) then
+		return true
+	end
+
 	local cmd = cmd.new{ nomux = true }
 	cmd:addcode[[
 		exec 2>>/dev/null
@@ -650,10 +795,78 @@ local function stat_ustar(path, st)
 	local hdr = cmd.fh:read(512)
 	cmd:close()
 
-	st = st or {}
+	if hdr and #hdr >= 500 then
+		local function getoctal(hdr, p, n)
+			return tonumber(hdr:sub(p + 1, p + n) or "", 8)
+		end
+
+		local function getname(hdr, p, n)
+			local name = hdr:sub(p + 1, p + n)
+
+			return name:match"[^%s%z]+"
+		end
+
+		local mode = getoctal(hdr, 100, 8)
+		local uid = getoctal(hdr, 108, 8)
+		local gid = getoctal(hdr, 116, 8)
+		local size = getoctal(hdr, 124, 12)
+		local mtime = getoctal(hdr, 136, 12)
+		local tflag = getoctal(hdr, 156, 1)
+		local user = getname(hdr, 265, 32)
+		local group = getname(hdr, 297, 32)
+		local devmajor = getoctal(hdr, 329, 8)
+		local devminor = getoctal(hdr, 337, 8)
+		local type
+
+		if not tflag and getname(hdr, 156, 1) == "\0" then
+			tflag = 0
+		end
+
+		type = ustar_typemap[tflag]
+		size = type == "-" and size or nil
+
+		-- skip if we didn't get any decent data
+		if not uid or not gid or not type then
+			return true
+		end
+
+		-- try to confirm we've read the same file as other methods,
+		-- but pax doesn't reliably provide device or inode numbers :(
+		if st.uid and uid ~= st.uid then
+			return true
+		elseif st.gid and gid ~= st.gid then
+			return true
+		elseif st.size and size and size ~= st.size then
+			return true
+		end
+
+		-- copy the mode or any missing file format type bits
+		if mode and not st.mode then
+			st.mode = mode
+		elseif mode and st.mode then
+			local perm = mode % tonumber("07777", 8)
+			local ifmt = mode / tonumber("07777", 8)
+			local st_perm = st.mode % tonumber("07777", 8)
+			local st_ifmt = st.mode / tonumber("07777", 8)
+
+			if perm == st_perm and st_ifmt == 0 then
+				st.mode = mode
+			end
+		end
+
+		st.type = st.type or type
+		st.uid = st.uid or uid
+		st.gid = st.gid or gid
+		st.size = st.size or size
+		st.mtime = st.mtime or mtime
+		st.user = st.user or user
+		st.group = st.group or group
+
+		return true
+	end
 
 	return nil, cmd:errors()
-end -- stat_ustar
+end -- ustar_stat
 
 local function stat_stat(path, st)
 	local cmd = cmd.new()
@@ -666,32 +879,31 @@ local function stat_stat(path, st)
 		fi
 	]]
 
-	local ok = false
-
-	st = st or {}
+	local found = {}
 
 	for type, info in cmd:results() do
 		if info then
 			for k,v in info:gmatch"st_(%w+)=(%d+)" do
 				st[k] = st[k] or tonumber(v)
-				ok = true
+				found[k] = true
 			end
 		end
 	end
 
-	return ok and st or nil
+	return found.dev and found.ino and found.mode and found.uid and found.gid
 end -- stat_stat
 
 function sh.stat(path, field, ...)
 	local st = {}
 
 	local stat_ok = stat_stat(path, st)
-	local ls_ok, ls_why = stat_ls(path, st)
+	local ls_ok, ls_why = ls_stat(path, st)
+	local ustar_ok = ustar_stat(path, st)
 
-	if not stat_ok and not ls_ok then
+	if not stat_ok and not ls_ok and not ustar_ok then
+		-- ls is only command we can read stderr from
 		return nil, ls_why
 	end
-
 
 	if field then
 		local function pushfields(utsname, field, ...)
@@ -714,9 +926,7 @@ function sh.umask()
 		sendmsg "$(umask)"
 	]]
 
-	local cmask = tonumber(cmd:result() or "", 8)
-
-	cmd:close()
+	local cmask = tonumber(cmd:result(true) or "", 8)
 
 	if cmask then
 		return cmask

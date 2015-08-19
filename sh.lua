@@ -40,19 +40,35 @@ local function arc4stream(key)
 	end
 
 	local function stir()
-		local fh = io.open("/dev/urandom", "rb")
+		local function urandom()
+			local fh = io.open("/dev/urandom", "rb")
+			local seed
 
-		if not fh then return false end
+			if fh then
+				seed = fh:read(256)
+				fh:close()
+			end
 
-		local seed = fh:read(256)
+			return (seed and #seed > 16 and seed) or nil
+		end
 
-		fh:close()
+		local function clock()
+			local ok, clk = pcall(string.format, "%A", os.clock())
+			return ok and clk or string.format("%.16g", os.clock())
+		end
 
-		if not seed then return false end
+		local seed = urandom()
 
-		rekey(seed)
+		if seed then
+			rekey(seed)
 
-		return true
+			return true
+		else
+			seed = table.concat{ os.date(), clock() }
+			rekey(seed)
+
+			return false
+		end
 	end
 
 	if key then
@@ -81,17 +97,17 @@ local function arc4random()
 	     + (arc4_getbyte())
 end
 
-local function random_c(n)
+local function random_char(n)
 	-- NB: 61 is prime
 	local t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678"
 
 	if n and n > 0 then
 		local r = (arc4random() % #t) + 1
-		return string.sub(t, r, r), random_c(n - 1)
+		return string.sub(t, r, r), random_char(n - 1)
 	end
 end
 
-local prefix = string.format(string.rep("%s", 8), random_c(8))
+local prefix = string.format(string.rep("%s", 8), random_char(8))
 
 -- code.epilog
 --

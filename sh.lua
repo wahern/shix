@@ -311,7 +311,9 @@ function cmd:setargs(...)
 	local args = { }
 
 	for _, arg in ipairs{ ... } do
-		if #arg > 1 then
+		arg = tostring(arg)
+
+		if #arg > 0 then
 			args[#args + 1] = encode8(arg)
 		end
 	end
@@ -578,6 +580,66 @@ function sh.getcwd()
 end -- sh.getcwd
 
 
+function sh.getegid()
+	local cmd = cmd.new()
+
+	cmd:addcode'sendmsg "$(id -g)"'
+
+	local egid = tonumber(cmd:result(true) or "")
+
+	if egid then
+		return egid
+	else
+		return nil, cmd:errors()
+	end
+end -- sh.getegid
+
+
+function sh.geteuid()
+	local cmd = cmd.new()
+
+	cmd:addcode'sendmsg "$(id -u)"'
+
+	local euid = tonumber(cmd:result(true) or "")
+
+	if euid then
+		return euid
+	else
+		return nil, cmd:errors()
+	end
+end -- sh.geteuid
+
+
+function sh.getgid()
+	local cmd = cmd.new()
+
+	cmd:addcode'sendmsg "$(id -gr)"'
+
+	local gid = tonumber(cmd:result(true) or "")
+
+	if gid then
+		return gid
+	else
+		return nil, cmd:errors()
+	end
+end -- sh.getgid
+
+
+function sh.getuid()
+	local cmd = cmd.new()
+
+	cmd:addcode'sendmsg "$(id -ur)"'
+
+	local uid = tonumber(cmd:result(true) or "")
+
+	if uid then
+		return uid
+	else
+		return nil, cmd:errors()
+	end
+end -- sh.getuid
+
+
 function sh.glob(path)
 	local files = {}
 	local cmd = cmd.new()
@@ -632,6 +694,11 @@ end -- sh.files
 function sh.rename(old, new)
 	return cmd.execute("mv", "--", old, new)
 end -- sh.rename
+
+
+function sh.sleep(n)
+	return cmd.execute("sleep", tonumber(n))
+end -- sh.sleep
 
 
 local function ls_imode(s)

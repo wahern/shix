@@ -200,10 +200,6 @@ local function minify(code, ...)
 	return _minified[code], minify(...)
 end -- minify
 
-local function tocommand(...)
-	return table.concat({ minify(code.epilog, ...) }, "\n")
-end -- tocommand
-
 
 -- encode8(STRING)
 --
@@ -233,20 +229,21 @@ local function decode8(s)
 end -- decode8
 
 
--- cmd object
+-- Command Object
 --
+-- Object to build, execute, and read results from shell commands.
 --
 local cmd = {}
 cmd.__index = cmd
 
-local defs = { nostderr = false }
+local defs = { nomux = false }
 
 function cmd.new(opts)
 	local self = setmetatable({ code = {}, stderr = {}, eof = false }, cmd)
 
 	opts = opts or defs
 
-	if not opts.nostderr then
+	if not opts.nomux then
 		self:addcode[[
 			exec 2>&1
 		]]
@@ -303,7 +300,7 @@ function cmd:setargs(...)
 		end
 	end
 
-	if #args > 1 then
+	if #args > 0 then
 		self:addcode([[
 			A="%s"
 			IFS=:
@@ -411,6 +408,130 @@ function cmd:result()
 end -- cmd:result
 
 
+-- Directory Object
+--
+-- Object to read directory entries.
+--
+-- TODO: Improve error handling.
+--
+local dir = {}
+dir.__index = dir
+
+function dir.new(path)
+	local self = setmetatable({}, dir)
+
+	-- our readdir protocol cannot tolerate interleaving stdout and stderr
+	self.cmd = cmd.new{ nomux = true }
+	self.cmd:addcode[[
+		exec 2>>/dev/null
+	]]
+
+	--
+	-- We use the find utility rather than the shell's built-in pathname
+	-- expansion to
+	--
+	-- 	(1) avoid any shell limits--number of pathname expansions
+	-- 	might be limited to, e.g., ARG_MAX; and
+	--
+	-- 	(2) reduce the latency between reporting individual files,
+	-- 	    otherwise we have to wait for the shell to read all
+	-- 	    files in the directory.
+	--
+	-- Note that -maxdepth is a GNU extension not supported on Solaris
+	-- or AIX. Instead we use -prune to prevent any recursion.
+	--
+	self.cmd:setargs(path)
+	self.cmd:addcode([[
+		find "${1}/." -name . -o \
+			-type d -prune -exec printf "%s\0\n" {} \; -o \
+			-exec printf "%s\0\n" {} \;
+	]])
+
+	self.cmd:run()
+
+	self.eof = false
+	self.lc = nil
+	self.line = {}
+	self.file = {}
+
+	return self
+end
+
+function dir:parse(buf)
+	for ln, nul, eol in buf:gmatch("([^\n%z]*)(%z?)(\n?)") do
+		if ln and #ln > 0 then
+			self.line[#self.line + 1] = ln
+			self.lc = string.sub(ln, #ln, #ln)
+		end
+
+		if nul and #nul > 0 then
+			self.lc = 0
+		end
+
+		if eol and #eol > 0 then
+			if self.lc == 0 then
+				local path = table.concat(self.line, "")
+				local file = path:gsub(".*/", "")
+
+				self.file[#self.file + 1] = file
+				self.line = {}
+				self.lc = nil
+			else
+				self.line[#self.line + 1] = eol
+				self.lc = string.byte(eol, 1, 1)
+			end
+		end
+	end
+end -- dir:parse
+
+function dir:step()
+	-- reduce per-file latency by reading in smaller chunks
+	local buf = not self.eof and self.cmd.fh:read(100)
+
+	if buf then
+		self:parse(buf)
+
+		return true
+	else
+		self:close()
+
+		return false
+	end
+end -- dir:step
+
+function dir:read()
+	while #self.file == 0 do
+		if not self:step() then
+			break
+		end
+	end
+
+	if #self.file > 0 then
+		local file = self.file[#self.file]
+
+		self.file[#self.file] = nil
+
+		return file
+	end
+end -- dir:read
+
+function dir:files()
+	return function ()
+		return self:read()
+	end
+end -- dir:files()
+
+function dir:close()
+	if not self.eof then
+		self.cmd.fh:close()
+		self.eof = true
+	end
+end -- dir:close
+
+
+-- Core Module Interfaces
+--
+--
 local sh = {}
 
 function sh.execute(...)
@@ -418,6 +539,11 @@ function sh.execute(...)
 		exec "$@"
 	]]))
 end -- sh.execute
+
+
+function sh.getcwd()
+	return nil
+end -- sh.getcwd
 
 
 function sh.glob(path)
@@ -455,40 +581,130 @@ function sh.mkfifo(path, mode)
 end -- sh.mkfifo
 
 
--- sh.opendir
---
--- TODO: Use find(1) to work around any glob expansion limit.
---
 function sh.opendir(path)
-	local cmd = cmd.new()
-
-	cmd:addlib"glob"
-	cmd:addcode([[
-		P="%s"
-		decode8 P
-		cd "${P}"
-		glob "*"
-	]], encode8(path))
-
-	return cmd
+	return dir.new(path)
 end -- sh.opendir
 
-function sh.readdir(cmd)
-	for type, file in cmd:results() do
-		if type == "glob" then
-			return file
-		end
-	end
+function sh.readdir(dh)
+	return dh:read()
 end -- sh.readdir
 
-function sh.closedir(cmd)
-	return cmd:close()
+function sh.closedir(dh)
+	return dh:close()
 end -- sh.closedir
+
+function sh.files(path)
+	local dh = dir.new(path)
+
+	return dh:files()
+end -- sh.files
 
 
 function sh.rename(old, new)
 	return cmd.execute("mv", "--", old, new)
 end -- sh.rename
+
+
+local function stat_ls(path, st)
+	local cmd = cmd.new()
+
+	cmd:setargs(path)
+	cmd:addcode[[
+		sendmsg "$(ls -ildH -- "${1}")"
+	]]
+
+	cmd:run()
+	local ln = cmd:result() or ""
+	cmd:close()
+
+	st = st or {}
+
+	local serial, mode, nlink, user, group, size, p = ln:match("^(%d+)%s+([^%s]+)%s+(%d+)%s+([^%s]+)%s+([^%s]+)%s+(%d+)%s*()")
+
+	if serial then
+		st.ino = st.ino or tonumber(serial)
+		st.mode = st.mode or mode
+		st.nlink = st.nlink or nlink
+		st.uid = st.uid or user
+		st.gid = st.gid or group
+		st.size = st.size or tonumber(size)
+
+		return st
+	else
+		return nil, cmd:errors()
+	end
+end -- stat_ls
+
+local function stat_ustar(path, st)
+	local cmd = cmd.new{ nomux = true }
+	cmd:addcode[[
+		exec 2>>/dev/null
+	]]
+
+	cmd:setargs(path)
+	cmd:addcode[[
+		(pax -x ustar -wd "${1}" || tar cnf - "${1}") | dd bs=512 count=1
+	]]
+
+	cmd:run()
+	local hdr = cmd.fh:read(512)
+	cmd:close()
+
+	st = st or {}
+
+	return nil, cmd:errors()
+end -- stat_ustar
+
+local function stat_stat(path, st)
+	local cmd = cmd.new()
+
+	cmd:setargs(path)
+	cmd:addcode[[
+		if [ -n "$(command -v stat)" ]; then
+			sendmsg "bsd" "$(stat -Ls "${1}")"
+			sendmsg "gnu" "$(stat -Lc "st_dev=%d st_ino=%i st_mode=%f st_nlink=%h st_uid=%u st_gid=%g st_size=%s st_atime=%X st_mtime=%Y st_ctime=%Z st_blksize=%B st_blocks=%b" "${1}")"
+		fi
+	]]
+
+	local ok = false
+
+	st = st or {}
+
+	for type, info in cmd:results() do
+		if info then
+			for k,v in info:gmatch"st_(%w+)=(%d+)" do
+				st[k] = st[k] or tonumber(v)
+				ok = true
+			end
+		end
+	end
+
+	return ok and st or nil
+end -- stat_stat
+
+function sh.stat(path, field, ...)
+	local st = {}
+
+	local stat_ok = stat_stat(path, st)
+	local ls_ok, ls_why = stat_ls(path, st)
+
+	if not stat_ok and not ls_ok then
+		return nil, ls_why
+	end
+
+
+	if field then
+		local function pushfields(utsname, field, ...)
+			if field then
+				return st[field], pushfields(st, ...)
+			end
+		end
+
+		return pushfields(st, field, ...)
+	else
+		return st
+	end
+end -- sh.stat
 
 
 function sh.umask()
@@ -508,6 +724,40 @@ function sh.umask()
 		return nil, cmd:errors()
 	end
 end -- sh.umask
+
+
+function sh.uname(field, ...)
+	local cmd = cmd.new()
+
+	cmd:addcode[[
+		set -- s sysname n nodename r release v version m machine
+
+		while [ $# -ge 2 ]; do
+			sendmsg "${2}" "$(uname "-${1}")"
+			shift 2
+		done
+	]]
+
+	local utsname = {}
+
+	for k, v in cmd:results() do
+		if v and #v > 0 then
+			utsname[k] = v
+		end
+	end
+
+	if field then
+		local function pushfields(utsname, field, ...)
+			if field then
+				return utsname[field], pushfields(utsname, ...)
+			end
+		end
+
+		return pushfields(utsname, field, ...)
+	else
+		return utsname
+	end
+end -- sh.uname
 
 
 function sh.unlink(path)

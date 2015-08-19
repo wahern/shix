@@ -876,7 +876,7 @@ local function ls_stat(path, st)
 		sendmsg "$(ls -ildHn -- "${1}")"
 	]]
 
-	local pat = "^(%d+)%s+([^%s]+)%s+(%d+)%s+([^%s]+)%s+([^%s]+)%s+(%d+)%s*"
+	local pat = "^%s*(%d+)%s+([^%s]+)%s+(%d+)%s+([^%s]+)%s+([^%s]+)%s+(%d+)%s*"
 	local ino, mode, nlink, user, group, size
 	local ug_ino, _, uid, gid
 	local n = 0

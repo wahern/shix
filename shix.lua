@@ -946,6 +946,11 @@ local function ustar_stat(path, st)
 		return true
 	end
 
+	-- NOTE: On NetBSD pax will sometimes issue an interactive prompt to
+	-- change the volume. Disable use of pax everywhere for now until
+	-- we can investigate further.
+	do return false end
+
 	local cmd = cmd.new{ nomux = true }
 	cmd:addcode[[
 		exec 2>>/dev/null
@@ -953,7 +958,7 @@ local function ustar_stat(path, st)
 
 	cmd:setargs(path)
 	cmd:addcode[[
-		(pax -x ustar -wd "${1}" || tar cnf - "${1}") | dd bs=512 count=1
+		(pax -x ustar -wd -- "${1}" || tar cnf - -- "${1}") | dd bs=512 count=1
 	]]
 
 	cmd:run()
@@ -1039,8 +1044,8 @@ local function stat_stat(path, st)
 	cmd:setargs(path)
 	cmd:addcode[[
 		if [ -n "$(command -v stat)" ]; then
-			sendmsg "bsd" "$(stat -Ls "${1}")"
-			sendmsg "gnu" "$(stat -Lc "st_dev=%d st_ino=%i st_mode=%f st_nlink=%h st_uid=%u st_gid=%g st_size=%s st_atime=%X st_mtime=%Y st_ctime=%Z st_blksize=%B st_blocks=%b" "${1}")"
+			sendmsg "bsd" "$(stat -Ls -- "${1}")"
+			sendmsg "gnu" "$(stat -Lc "st_dev=%d st_ino=%i st_mode=%f st_nlink=%h st_uid=%u st_gid=%g st_size=%s st_atime=%X st_mtime=%Y st_ctime=%Z st_blksize=%B st_blocks=%b" -- "${1}")"
 		fi
 	]]
 

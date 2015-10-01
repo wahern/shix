@@ -21,14 +21,15 @@ best of my knowledge they're safe and correct per POSIX. Though there
 doesn't exist any shell that I'm aware of which is 100% POSIX compliant, I
 try to test comprehensively on various system-shell implementations,
 including bash, ksh88, ksh93, ash, pdksh, and derivatives thereof.
-Nonetheless there may be some corner cases that break on some shells. Caveat
-emptor.
-
+Nonetheless there may be some corner cases that break on some shells.
 While the primitives should be safe and POSIX compliant, some of features
 require non-POSIX functionality. For example, the ```stat()``` routine
 relies on the presence of a GNU-like or BSD-like ```stat(1)``` utility for
 some file attributes, as ```ls(1)``` doesn't report all the members of
 ```struct stat```.
+
+Finally, the framework as a whole is new and has not been heavily used.
+Caveat emptor.
 
 ### Safe string handling
 
@@ -81,9 +82,10 @@ deficiency of modules like Lua POSIX.)
 
 ### Sensitive Data
 
-Arguments are communicated to subshells using the argument vector, which is
-usually readable by any user on the system. In the future a mechanism using
-temporary files could be optionally used to communicate arguments.
+Arguments and generated shell code are communicated to subshells using the
+argument vector (via ```popen(3)```), which is usually readable by any user
+on the system. In the future a mechanism using temporary files could be
+optionally used to communicate arguments.
 
 ### Process State
 

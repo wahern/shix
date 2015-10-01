@@ -101,54 +101,11 @@ management and filesystem manipulation performance will be quite slow.
 The module cannot report C system error codes. Failure is usually binary.
 Sometimes failure cannot be reported at all.
 
-## Module API
+## Basic API
 
 ### closedir(dh:object)
 
 Close the directory handle.
-
-### command.new([opts:table])
-
-Return a command execution object, used to build, execute, and read results
-from a subshell. This is currently an internal API and subject to change,
-but can be useful for extending the module.
-
-### command:addlib(name:string)
-
-Add the specified library routine to the subshell invocation commandline.
-E.g. "glob".
-
-### command:addcode(fmt[, ...])
-
-Add specified code the subshell invocation commandline. This code is not
-escaped, so do not put arbitrary strings here. Use ```command:setargs```
-instead.
-
-### command:close()
-
-FIXME
-
-### command:recvmsg()
-
-FIXME
-
-### command:result()
-
-FIXME
-
-### command:results()
-
-FIXME
-
-### command:run()
-
-FIXME
-
-### command:setargs(arg:string[, ...])
-
-Translate the specified string to shell code which sets the positional
-argument list and add the generated code to the subshell invocation
-commandline.
 
 ### files(path:string)
 
@@ -230,3 +187,48 @@ values to report in the return list.
 ### unlink(path:string)
 
 Unlink the specified path.  Uses ```rm(1)```.
+
+## Extension API
+
+### command.new([opts:table])
+
+Return a command execution object, used to build, execute, and read results
+from a subshell. This is currently an internal API and subject to change,
+but can be useful for extending the module.
+
+### command:addlib(name:string)
+
+Add the specified library routine to the subshell invocation commandline.
+E.g. "glob".
+
+### command:addcode(fmt[, ...])
+
+Add specified code the subshell invocation commandline. This code is not
+escaped, so do not put arbitrary strings here. Use ```command:setargs```
+instead.
+
+### command:close()
+
+FIXME
+
+### command:recvmsg()
+
+FIXME
+
+### command:result()
+
+FIXME
+
+### command:results()
+
+FIXME
+
+### command:run()
+
+FIXME
+
+### command:setargs(arg:string[, ...])
+
+Translate the specified string to shell code which sets the positional
+argument list and add the generated code to the subshell invocation
+commandline.

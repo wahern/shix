@@ -64,21 +64,13 @@ set -C # noclobber
 
 ### Atomicity and Consistency
 
-Unlike system calls, these bindings involve invoking subprocesses. Sometimes
-an operation must be synthesized using multiple suboperations, whereas the
-related C system call would be atomic--e.g. applying umask to file creation
-modes. File system operations can't operate on descriptors directly. The
-implications of these and similar limitations (see Failure Detection below)
-can be subtle. This module probably shouldn't be used from privileged
-processes without significant consideration.
-
-(Indeed, some of the related C APIs shouldn't be used from privileged
-processes at all, no matter the bindings module or language. My Lua Unix
-module goes to great lengths to bind more modern, safer C API interfaces,
-implemented in a race-free manner, and with the addition of auxiliary
-interfaces which assist secure programming. This often means binding
-portable-in-practice interfaces which may not be defined by POSIX, a
-deficiency of modules like Lua POSIX.)
+Unlike system calls, these bindings involve invoking subprocesses. Some
+logical operations must be synthesized using multiple userspace operations,
+whereas the related C system call would be atomic--e.g. applying umask to a
+file creation mode. File system operations can't operate on descriptors
+directly. The implications of these and similar limitations (see, e.g.,
+Failure Detection below) can be subtle. This module probably shouldn't be
+used from privileged processes without significant consideration.
 
 ### Sensitive Data
 
@@ -148,7 +140,7 @@ Create named FIFO at path.
 ### opendir(path:string)
 
 Return a directory handle. Unlike in C this is not a handle to an open
-directory descriptor; it's a wrappar around a Lua file handle to the stdout
+directory descriptor; it's a wrapper around a Lua file handle to the stdout
 of a subshell sending the directory contents.
 
 ### readdir(dh:object)
@@ -203,9 +195,9 @@ but can be useful for extending the module.
 Add the specified library routine to the subshell invocation commandline.
 E.g. "glob".
 
-### command:addcode(fmt[, ...])
+### command:addcode(fmt:string[, ...])
 
-Add specified code the subshell invocation commandline. This code is not
+Add specified code to the subshell invocation commandline. This code is not
 escaped, so do not put arbitrary strings here. Use ```command:setargs```
 instead.
 
@@ -232,5 +224,5 @@ FIXME
 ### command:setargs(arg:string[, ...])
 
 Translate the specified string to shell code which sets the positional
-argument list and add the generated code to the subshell invocation
+argument list and add this generated code to the subshell invocation
 commandline.

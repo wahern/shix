@@ -159,8 +159,8 @@ local function arc4random()
 	     + (arc4_getbyte())
 end
 
-local function arc4random_str(n)
-	-- NB: 61 is prime
+-- NOTE: 61 is prime
+local function arc4random_nonce61(n)
 	local t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678"
 
 	local function getchars(n)
@@ -169,6 +169,8 @@ local function arc4random_str(n)
 			return string.byte(t, r, r), getchars(n - 1)
 		end
 	end
+
+	n = n or 8
 
 	return string.format(string.rep("%c", n), getchars(n))
 end
@@ -186,7 +188,7 @@ local code = {}
 --
 -- Code to create a safe, consistent execution environment.
 --
-local stdout_prefix = arc4random_str(8) -- magic string prefix for IPC
+local stdout_prefix = arc4random_nonce61(8) -- magic string prefix for IPC
 
 code.epilog = string.format([[
 	set -e # strict errors
@@ -198,7 +200,7 @@ code.epilog = string.format([[
 	export LC_ALL=C # no locale headaches
 
 	# print8 STRING
-	# 
+	#
 	# Print octal-encoded STRING readable by printf(1) %%b format
 	# specifier
 	#
@@ -362,7 +364,7 @@ function cmd.execute(...)
 	cmd:close()
 
 	if exit == "exit" then
-		return (status == 0 and true or nil), exit, tonumber(status)
+		return (tonumber(status) == 0 or nil), exit, tonumber(status)
 	else
 		return nil, "exit", 127
 	end
@@ -443,7 +445,7 @@ end -- cmd:errors()
 
 local stdout_pat = string.format("^<%s,(%%d+)>%%s*([\\01234567]*)", stdout_prefix)
 
-function cmd:recvln(fh)
+function cmd:recvln()
 	if self.eof then
 		return
 	elseif not self:running() then
@@ -640,7 +642,11 @@ end -- dir:close
 --
 -- =========================================================================
 
+local bit32 = bit32 or require"bit"
 local shix = {}
+
+shix.arc4random_nonce61 = arc4random_nonce61
+shix.command = cmd
 
 function shix.execute(...)
 	return cmd.execute(...)
@@ -740,15 +746,20 @@ function shix.glob(path)
 end -- shix.glob
 
 
+local function cmode(mode)
+	local cmask = bit32.bnot(assert(shix.umask()))
+	return bit32.band(assert(mode, "no mode specified"), cmask)
+end -- cmode
+
 function shix.mkdir(path, mode)
-	mode = string.format("0%.3o", assert(mode, "no mode specified") - assert(shix.umask()))
+	mode = string.format("0%.3o", cmode(assert(mode, "no mode specified")))
 
 	return cmd.execute("mkdir", "-m", mode, "--", path)
 end -- shix.mkdir
 
 
 function shix.mkfifo(path, mode)
-	mode = string.format("0%.3o", assert(mode, "no mode specified") - assert(shix.umask()))
+	mode = string.format("0%.3o", cmode(assert(mode, "no mode specified")))
 
 	return cmd.execute("mkfifo", "-m", mode, "--", path)
 end -- shix.mkfifo
